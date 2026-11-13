@@ -209,6 +209,32 @@ def build_hits(function):
     return hits
 
 
+def compute_verdict(per_function):
+    """
+    Global verdict {family: 0-100}, set explicitly instead of letting Malcat infer it from the hits.
+
+    For every malware family: the share of the file's *malware-attributed* functions that belong to it,
+    weighted by Threatray's per-function score (100 = every such function matches the family with score 1.0).
+    Only MALWARE-level hits count, and only functions with at least one such hit are in the denominator:
+    library / clean / benign / unknown / merely suspicious functions don't dilute the percentages.
+    Families are not exclusive (shared code), so the values don't sum to 100.
+    """
+    malicious_functions = 0
+    weight = {}
+    for merged in per_function.values():
+        families = {name: hit.score for (level, name), (hit, _) in merged.items()
+                    if level == Detection.Level.MALWARE and name}
+        if not families:
+            continue
+        malicious_functions += 1
+        for name, score in families.items():
+            weight[name] = weight.get(name, 0.0) + score / 100.0
+    if not malicious_functions:
+        return {}
+    shares = {name: min(100.0, round(100.0 * w / malicious_functions, 2)) for name, w in weight.items()}
+    return dict(sorted(shares.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def reference_url(realm, detection):
     ref = detection.get("reference_function")
     if not ref or not ref.get("analysis_id"):
@@ -353,7 +379,8 @@ class Threatray(OnlineChecker):
         # NB: KesakodeExternalResult.set_intelligence() is buggy in this Malcat version, set the attributes directly
         for name, info in infos.items():
             result.intelligence[name] = format_intelligence(realm, name, info)
-        # leave result.verdict empty: Malcat computes the global verdict from the hits
+        # explicit global verdict (see compute_verdict) rather than Malcat's own inference from the hits
+        result.set_verdict(compute_verdict(per_function))
 
         self.stats = {"functions_reported": len(functions), "functions_matched": len(per_function),
                       "functions_unmatched": unmatched, "names": len(infos), "image_base": tr_image_base,
